@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	otel "github.com/arslanovdi/otel-kafka-go"
+	otelkafka "github.com/arslanovdi/otel-kafka-go"
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 	"log/slog"
 	"os"
@@ -31,12 +31,12 @@ func main() {
 	wg := sync.WaitGroup{}
 	stopChain := make(chan struct{})
 
-	jaeger, err := otel.NewProvider(context.Background(), instance, jaeger_address)
+	jaeger, err := otelkafka.NewProvider(context.Background(), instance, jaeger_address)
 	if err != nil {
 		slog.Error("Failed to create jaeger exporter: ", slog.String("error", err.Error()))
 	}
 
-	trace := otel.NewOtelProducer(instance)
+	trace := otelkafka.NewOtelProducer(instance)
 
 	cfg := kafka.ConfigMap{
 		"bootstrap.servers": brokers,
@@ -72,7 +72,7 @@ func main() {
 					Value: []byte(value),
 				}
 
-				trace.OnSend(nil, msg)
+				trace.OnSend(context.Background(), msg)
 
 				err = producer.Produce(msg, deliveryChan)
 				if err != nil {

@@ -44,7 +44,6 @@ type OtelConsumer interface {
 	OnPoll(msg *kafka.Message, group string)    // tracing poll(read) message.
 	OnProcess(msg *kafka.Message, group string) // tracing process message. update tracing info in msg headers.
 	OnCommit(msg *kafka.Message, group string)  // tracing commit message. update tracing info in msg headers.
-	Context(message *kafka.Message) context.Context
 }
 
 type OtelProvider interface {
@@ -99,6 +98,9 @@ func (op *otelProvider) OnSend(ctx context.Context, msg *kafka.Message) {
 	if msg == nil {
 		return
 	}
+	if msg.TopicPartition.Topic == nil {
+		return
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -117,7 +119,7 @@ func (op *otelProvider) OnSend(ctx context.Context, msg *kafka.Message) {
 
 	_, span := op.tracer.Start(
 		ctx,
-		*msg.TopicPartition.Topic,
+		"send "+*msg.TopicPartition.Topic,
 		trace.WithAttributes(attWithTopic...))
 
 	defer span.End()
@@ -125,13 +127,17 @@ func (op *otelProvider) OnSend(ctx context.Context, msg *kafka.Message) {
 
 	span.SetAttributes(attribute.String("messaging.message.id", spanContext.SpanID().String()))
 
-	setSpanAttributes(spanContext, msg)
+	SetSpanAttributes(spanContext, msg) // update tracing info in msg headers. Информация трассировки улетит консюмерам через kafka.
+
 }
 
 // OnPoll
 // tracing poll(read) message.
 func (op *otelProvider) OnPoll(msg *kafka.Message, group string) {
 	if msg == nil {
+		return
+	}
+	if msg.TopicPartition.Topic == nil {
 		return
 	}
 
@@ -150,8 +156,8 @@ func (op *otelProvider) OnPoll(msg *kafka.Message, group string) {
 	}
 
 	_, span := op.tracer.Start(
-		op.Context(msg),
-		*msg.TopicPartition.Topic,
+		Context(msg),
+		"poll "+*msg.TopicPartition.Topic,
 		trace.WithAttributes(attWithTopic...))
 	defer span.End()
 	spanContext := span.SpanContext()
@@ -164,6 +170,9 @@ func (op *otelProvider) OnPoll(msg *kafka.Message, group string) {
 // update tracing info in msg headers.
 func (op *otelProvider) OnProcess(msg *kafka.Message, group string) {
 	if msg == nil {
+		return
+	}
+	if msg.TopicPartition.Topic == nil {
 		return
 	}
 
@@ -182,15 +191,15 @@ func (op *otelProvider) OnProcess(msg *kafka.Message, group string) {
 	}
 
 	_, span := op.tracer.Start(
-		op.Context(msg),
-		*msg.TopicPartition.Topic,
+		Context(msg),
+		"process "+*msg.TopicPartition.Topic,
 		trace.WithAttributes(attWithTopic...))
 	defer span.End()
 	spanContext := span.SpanContext()
 
 	span.SetAttributes(attribute.String("messaging.message.id", spanContext.SpanID().String()))
 
-	setSpanAttributes(spanContext, msg)
+	SetSpanAttributes(spanContext, msg)
 }
 
 // OnCommit
@@ -198,6 +207,9 @@ func (op *otelProvider) OnProcess(msg *kafka.Message, group string) {
 // update tracing info in msg headers.
 func (op *otelProvider) OnCommit(msg *kafka.Message, group string) {
 	if msg == nil {
+		return
+	}
+	if msg.TopicPartition.Topic == nil {
 		return
 	}
 
@@ -212,24 +224,25 @@ func (op *otelProvider) OnCommit(msg *kafka.Message, group string) {
 	)
 
 	_, span := op.tracer.Start(
-		op.Context(msg),
-		*msg.TopicPartition.Topic,
+		Context(msg),
+		"commit "+*msg.TopicPartition.Topic,
 		trace.WithAttributes(attWithTopic...))
 	defer span.End()
 	spanContext := span.SpanContext()
 
 	span.SetAttributes(attribute.String("messaging.message.id", spanContext.SpanID().String()))
 
-	setSpanAttributes(spanContext, msg)
+	SetSpanAttributes(spanContext, msg)
 }
 
 // Context
 // get span context from kafka message headers
-func (op *otelProvider) Context(msg *kafka.Message) context.Context {
+func Context(msg *kafka.Message) context.Context {
 	ctx := context.Background()
 	if msg == nil {
 		return ctx
 	}
+
 	roottraceid := ""
 	rootspanid := ""
 	issampled := trace.TraceFlags(0)
@@ -270,9 +283,9 @@ func (op *otelProvider) Context(msg *kafka.Message) context.Context {
 	return ctx
 }
 
-// setSpanAttributes
+// SetSpanAttributes
 // setting partial tracing headers to create child span.
-func setSpanAttributes(spanContext trace.SpanContext, msg *kafka.Message) {
+func SetSpanAttributes(spanContext trace.SpanContext, msg *kafka.Message) {
 	if msg == nil {
 		return
 	}
@@ -292,5 +305,4 @@ func setSpanAttributes(spanContext trace.SpanContext, msg *kafka.Message) {
 		traceHeaders = append(traceHeaders, kafka.Header{Key: SampledHeaderName, Value: []byte("true")})
 	}
 	msg.Headers = append(noTraceHeaders, traceHeaders...)
-	return
 }

@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	otel "github.com/arslanovdi/otel-kafka-go"
+	otelkafka "github.com/arslanovdi/otel-kafka-go"
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 	"log/slog"
 	"os"
@@ -25,12 +25,12 @@ const (
 
 func main() {
 
-	jaeger, err := otel.NewProvider(context.Background(), instance, jaeger_address)
+	jaeger, err := otelkafka.NewProvider(context.Background(), instance, jaeger_address)
 	if err != nil {
 		slog.Error("Failed to create jaeger exporter: ", slog.String("error", err.Error()))
 	}
 
-	trace := otel.NewOtelConsumer(instance)
+	trace := otelkafka.NewOtelConsumer(instance)
 
 	consumer, err := kafka.NewConsumer(&kafka.ConfigMap{
 		"bootstrap.servers":       brokers,
@@ -69,11 +69,14 @@ loop:
 		default:
 			msg, err := consumer.ReadMessage(ReadTimeout) // read message with timeout
 			if err == nil {
+				if otelkafka.Context(msg) == context.Background() {
+					slog.Error("Message without root span context")
+				}
 				trace.OnPoll(msg, group)
 
 				func() {
 					trace.OnProcess(msg, group)
-					fmt.Printf("Message on topic %s: key = %s, value = %s\n", *msg.TopicPartition.Topic, string(msg.Key), string(msg.Value))
+					fmt.Printf("Message on topic %s: key = %s, value = %s, offset = %d\n", *msg.TopicPartition.Topic, string(msg.Key), string(msg.Value), msg.TopicPartition.Offset)
 					_, err := consumer.CommitMessage(msg)
 					if err != nil {
 						slog.Error("Failed to commit message: ", slog.String("error", err.Error()))
