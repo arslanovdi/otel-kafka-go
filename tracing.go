@@ -1,14 +1,16 @@
-// Package otel_kafka_go
+// Package otelkafkago
 // OpenTelemetry instrumentation for confluent-kafka-go
-package otel_kafka_go
+package otelkafkago
 
 import (
 	"context"
+	"strconv"
+
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	semconv "go.opentelemetry.io/otel/semconv/v1.27.0"
 	"go.opentelemetry.io/otel/trace"
-	"strconv"
 )
 
 // These based on OpenTelemetry API & SDKs for go
@@ -33,17 +35,21 @@ const (
 )
 
 // OtelProducer
-// Интерфейс обработчика трассировки kafka продюсера
+// - kafka producer instrumentation for tracing
 type OtelProducer interface {
-	OnSend(ctx context.Context, msg *kafka.Message) // tracing produce message. integrate tracing into msg headers
+	// OnSend - message sending trace. Integrate tracing into msg headers
+	OnSend(ctx context.Context, msg *kafka.Message)
 }
 
 // OtelConsumer
-// Интерфейс обработчика трассировки kafka консюмера
+// - kafka consumer instrumentation for tracing
 type OtelConsumer interface {
-	OnPoll(msg *kafka.Message, group string)    // tracing poll(read) message.
-	OnProcess(msg *kafka.Message, group string) // tracing process message. update tracing info in msg headers.
-	OnCommit(msg *kafka.Message, group string)  // tracing commit message. update tracing info in msg headers.
+	// OnPoll - trace poll/read message
+	OnPoll(msg *kafka.Message, group string)
+	// OnProcess - trace message processing. Updates trace information in message headers.
+	OnProcess(msg *kafka.Message, group string)
+	// OnCommit - trace commit message. Updates trace information in message headers.
+	OnCommit(msg *kafka.Message, group string)
 }
 
 type OtelProvider interface {
@@ -59,8 +65,8 @@ type otelProvider struct {
 func (op *otelProvider) new(instance string) {
 	op.tracer = otel.GetTracerProvider().Tracer(otelLibraryName, trace.WithInstrumentationVersion(otelLibraryVer))
 	op.fixedAttrs = []attribute.KeyValue{
-		attribute.String("messaging.client.id", instance),
-		attribute.String("messaging.system", "kafka"),
+		semconv.MessagingClientID(instance), // messaging.client.id
+		semconv.MessagingSystemKafka,        // messaging.system set kafka
 	}
 }
 
@@ -74,8 +80,8 @@ func New(instance string) OtelProvider {
 }
 
 // NewOtelProducer
-// Инициализация обработчика трассировки kafka продюсера
-// global trace provider must be initialized
+// - initialization OtelProducer.
+// Global trace provider must be initialized.
 func NewOtelProducer(instance string) OtelProducer {
 	op := otelProvider{}
 	op.new(instance)
@@ -83,8 +89,8 @@ func NewOtelProducer(instance string) OtelProducer {
 }
 
 // NewOtelConsumer
-// Инициализация обработчика трассировки kafka консюмера
-// global trace provider must be initialized
+// - initialization OtelConsumer.
+// Global trace provider must be initialized.
 func NewOtelConsumer(instance string) OtelConsumer {
 	op := otelProvider{}
 	op.new(instance)
@@ -105,16 +111,19 @@ func (op *otelProvider) OnSend(ctx context.Context, msg *kafka.Message) {
 		ctx = context.Background()
 	}
 
-	attWithTopic := append(
-		op.fixedAttrs,
-		attribute.String("messaging.destination.name", *msg.TopicPartition.Topic),
-		attribute.String("messaging.destination.partition.id", strconv.FormatInt(int64(msg.TopicPartition.Partition), 10)),
-		attribute.String("messaging.operation.name", "send"),
-		attribute.String("messaging.operation.type", "send"),
+	var attWithTopic []attribute.KeyValue
+	copy(attWithTopic, op.fixedAttrs)
+
+	attWithTopic = append(
+		attWithTopic,
+		semconv.MessagingDestinationName(*msg.TopicPartition.Topic),                                         // messaging.destination.name
+		semconv.MessagingDestinationPartitionID(strconv.FormatInt(int64(msg.TopicPartition.Partition), 10)), // messaging.destination.partition.id
+		semconv.MessagingOperationName("send"),                                                              // messaging.operation.name
+		semconv.MessagingOperationTypeKey.String("send"),                                                    // messaging.operation.type = settle
 	)
 
 	if len(msg.Key) > 0 { //  If the key is null, the attribute MUST NOT be set
-		attWithTopic = append(attWithTopic, attribute.String("messaging.kafka.message.key", string(msg.Key)))
+		attWithTopic = append(attWithTopic, semconv.MessagingKafkaMessageKey(string(msg.Key))) // messaging.kafka.message.key
 	}
 
 	_, span := op.tracer.Start(
@@ -125,10 +134,9 @@ func (op *otelProvider) OnSend(ctx context.Context, msg *kafka.Message) {
 	defer span.End()
 	spanContext := span.SpanContext()
 
-	span.SetAttributes(attribute.String("messaging.message.id", spanContext.SpanID().String()))
+	span.SetAttributes(semconv.MessagingMessageID(spanContext.SpanID().String())) // messaging.message.id
 
-	SetSpanAttributes(spanContext, msg) // update tracing info in msg headers. Информация трассировки улетит консюмерам через kafka.
-
+	SetSpanAttributes(spanContext, msg) // update tracing info in msg headers.
 }
 
 // OnPoll
@@ -141,18 +149,21 @@ func (op *otelProvider) OnPoll(msg *kafka.Message, group string) {
 		return
 	}
 
-	attWithTopic := append(
-		op.fixedAttrs,
-		attribute.String("messaging.destination.name", *msg.TopicPartition.Topic),
-		attribute.String("messaging.consumer.group.name", group),
-		attribute.String("messaging.destination.partition.id", strconv.FormatInt(int64(msg.TopicPartition.Partition), 10)),
-		attribute.String("messaging.operation.name", "poll"),
-		attribute.String("messaging.operation.type", "receive"),
-		attribute.String("messaging.kafka.message.offset", strconv.FormatInt(int64(msg.TopicPartition.Offset), 10)),
+	var attWithTopic []attribute.KeyValue
+	copy(attWithTopic, op.fixedAttrs)
+
+	attWithTopic = append(
+		attWithTopic,
+		semconv.MessagingDestinationName(*msg.TopicPartition.Topic),                                         // messaging.destination.name
+		semconv.MessagingConsumerGroupName(group),                                                           // messaging.consumer.group.name
+		semconv.MessagingDestinationPartitionID(strconv.FormatInt(int64(msg.TopicPartition.Partition), 10)), // messaging.destination.partition.id
+		semconv.MessagingOperationName("poll"),                                                              // messaging.operation.name
+		semconv.MessagingOperationTypeReceive,                                                               // // messaging.operation.type = receive
+		semconv.MessagingKafkaOffset(int(msg.TopicPartition.Offset)),                                        // messaging.kafka.offset
 	)
 
 	if len(msg.Key) > 0 { //  If the key is null, the attribute MUST NOT be set
-		attWithTopic = append(attWithTopic, attribute.String("messaging.kafka.message.key", string(msg.Key)))
+		attWithTopic = append(attWithTopic, semconv.MessagingKafkaMessageKey(string(msg.Key))) // messaging.kafka.message.key
 	}
 
 	_, span := op.tracer.Start(
@@ -162,7 +173,7 @@ func (op *otelProvider) OnPoll(msg *kafka.Message, group string) {
 	defer span.End()
 	spanContext := span.SpanContext()
 
-	span.SetAttributes(attribute.String("messaging.message.id", spanContext.SpanID().String()))
+	span.SetAttributes(semconv.MessagingMessageID(spanContext.SpanID().String())) // messaging.message.id
 }
 
 // OnProcess
@@ -176,18 +187,21 @@ func (op *otelProvider) OnProcess(msg *kafka.Message, group string) {
 		return
 	}
 
-	attWithTopic := append(
-		op.fixedAttrs,
-		attribute.String("messaging.destination.name", *msg.TopicPartition.Topic),
-		attribute.String("messaging.consumer.group.name", group),
-		attribute.String("messaging.destination.partition.id", strconv.FormatInt(int64(msg.TopicPartition.Partition), 10)),
-		attribute.String("messaging.operation.name", "process"),
-		attribute.String("messaging.operation.type", "process"),
-		attribute.String("messaging.kafka.message.offset", strconv.FormatInt(int64(msg.TopicPartition.Offset), 10)),
+	var attWithTopic []attribute.KeyValue
+	copy(attWithTopic, op.fixedAttrs)
+
+	attWithTopic = append(
+		attWithTopic,
+		semconv.MessagingDestinationName(*msg.TopicPartition.Topic),                                         // messaging.destination.name
+		semconv.MessagingConsumerGroupName(group),                                                           // messaging.consumer.group.name
+		semconv.MessagingDestinationPartitionID(strconv.FormatInt(int64(msg.TopicPartition.Partition), 10)), // messaging.destination.partition.id
+		semconv.MessagingOperationName("process"),                                                           // messaging.operation.name
+		semconv.MessagingOperationTypeProcess,                                                               // messaging.operation.type = process
+		semconv.MessagingKafkaOffset(int(msg.TopicPartition.Offset)),                                        // messaging.kafka.offset
 	)
 
 	if len(msg.Key) > 0 { //  If the key is null, the attribute MUST NOT be set
-		attWithTopic = append(attWithTopic, attribute.String("messaging.kafka.message.key", string(msg.Key)))
+		attWithTopic = append(attWithTopic, semconv.MessagingKafkaMessageKey(string(msg.Key))) // messaging.kafka.message.key
 	}
 
 	_, span := op.tracer.Start(
@@ -197,7 +211,7 @@ func (op *otelProvider) OnProcess(msg *kafka.Message, group string) {
 	defer span.End()
 	spanContext := span.SpanContext()
 
-	span.SetAttributes(attribute.String("messaging.message.id", spanContext.SpanID().String()))
+	span.SetAttributes(semconv.MessagingMessageID(spanContext.SpanID().String())) // messaging.message.id
 
 	SetSpanAttributes(spanContext, msg)
 }
@@ -213,14 +227,17 @@ func (op *otelProvider) OnCommit(msg *kafka.Message, group string) {
 		return
 	}
 
-	attWithTopic := append(
-		op.fixedAttrs,
-		attribute.String("messaging.destination.name", *msg.TopicPartition.Topic),
-		attribute.String("messaging.consumer.group.name", group),
-		attribute.String("messaging.destination.partition.id", strconv.FormatInt(int64(msg.TopicPartition.Partition), 10)),
-		attribute.String("messaging.operation.name", "commit"),
-		attribute.String("messaging.operation.type", "settle"),
-		attribute.String("messaging.kafka.message.offset", strconv.FormatInt(int64(msg.TopicPartition.Offset), 10)),
+	var attWithTopic []attribute.KeyValue
+	copy(attWithTopic, op.fixedAttrs)
+
+	attWithTopic = append(
+		attWithTopic,
+		semconv.MessagingDestinationName(*msg.TopicPartition.Topic),                                         // messaging.destination.name
+		semconv.MessagingConsumerGroupName(group),                                                           // messaging.consumer.group.name
+		semconv.MessagingDestinationPartitionID(strconv.FormatInt(int64(msg.TopicPartition.Partition), 10)), // messaging.destination.partition.id
+		semconv.MessagingOperationName("commit"),                                                            // messaging.operation.name
+		semconv.MessagingOperationTypeSettle,                                                                // messaging.operation.type = settle
+		semconv.MessagingKafkaOffset(int(msg.TopicPartition.Offset)),                                        // messaging.kafka.offset
 	)
 
 	_, span := op.tracer.Start(
@@ -230,7 +247,7 @@ func (op *otelProvider) OnCommit(msg *kafka.Message, group string) {
 	defer span.End()
 	spanContext := span.SpanContext()
 
-	span.SetAttributes(attribute.String("messaging.message.id", spanContext.SpanID().String()))
+	span.SetAttributes(semconv.MessagingMessageID(spanContext.SpanID().String())) // messaging.message.id
 
 	SetSpanAttributes(spanContext, msg)
 }
@@ -258,7 +275,7 @@ func Context(msg *kafka.Message) context.Context {
 		}
 	}
 
-	if len(roottraceid) == 0 || len(rootspanid) == 0 {
+	if roottraceid == "" || rootspanid == "" {
 		return ctx
 	}
 

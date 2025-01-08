@@ -2,14 +2,16 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	otelkafka "github.com/arslanovdi/otel-kafka-go"
-	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	otelkafka "github.com/arslanovdi/otel-kafka-go"
+	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 )
 
 const (
@@ -19,17 +21,18 @@ const (
 	defaultSessionTimeout = 6000
 	ReadTimeout           = 1 * time.Second
 
-	instance       = "kafka consumer №1"
-	jaeger_address = "127.0.0.1:4317"
+	instance      = "kafka consumer №1"
+	jaegerAddress = "127.0.0.1:4317"
 )
 
 func main() {
-
-	jaeger, err := otelkafka.NewProvider(context.Background(), instance, jaeger_address)
+	// Инициализация глобального провайдера трассировки
+	jaeger, err := otelkafka.NewProvider(context.Background(), instance, jaegerAddress)
 	if err != nil {
 		slog.Error("Failed to create jaeger exporter: ", slog.String("error", err.Error()))
 	}
 
+	// Инициализация провайдера трассировки consumer otel-kafka-go
 	trace := otelkafka.NewOtelConsumer(instance)
 
 	consumer, err := kafka.NewConsumer(&kafka.ConfigMap{
@@ -46,16 +49,16 @@ func main() {
 		os.Exit(1)
 	}
 	defer func() {
-		err := consumer.Close()
-		if err != nil {
-			slog.Error("Failed to close consumer: ", slog.String("error", err.Error()))
+		err1 := consumer.Close()
+		if err1 != nil {
+			slog.Error("Failed to close consumer: ", slog.String("error", err1.Error()))
 		}
 	}()
 
 	err = consumer.Subscribe(topic, nil)
 	if err != nil {
 		slog.Error("Failed to subscribe to topic: ", slog.String("error", err.Error()))
-		os.Exit(1)
+		panic("Failed to subscribe to topic")
 	}
 
 	stop := make(chan os.Signal, 1)
@@ -67,26 +70,39 @@ loop:
 		case <-stop:
 			break loop
 		default:
-			msg, err := consumer.ReadMessage(ReadTimeout) // read message with timeout
-			if err == nil {
-				if otelkafka.Context(msg) == context.Background() {
-					slog.Error("Message without root span context")
-				}
-				trace.OnPoll(msg, group)
-
-				func() {
-					trace.OnProcess(msg, group)
-					fmt.Printf("Message on topic %s: key = %s, value = %s, offset = %d\n", *msg.TopicPartition.Topic, string(msg.Key), string(msg.Value), msg.TopicPartition.Offset)
-					_, err := consumer.CommitMessage(msg)
-					if err != nil {
-						slog.Error("Failed to commit message: ", slog.String("error", err.Error()))
+			msg, err1 := consumer.ReadMessage(ReadTimeout) // read message with timeout
+			if err1 != nil {
+				var e kafka.Error
+				ok := errors.As(err, &e)
+				if ok {
+					if e.IsTimeout() { // `err.(kafka.Error).IsTimeout() == true`
+						continue // no messages during ReadTimeout
 					}
-					trace.OnCommit(msg, group)
-				}()
+				}
 
-			} else if !err.(kafka.Error).IsTimeout() { // TODO process timeout
-				slog.Error("Consumer error: ", slog.String("error", err.Error()))
+				slog.Error("Consumer error: ", slog.String("error", err1.Error()))
 			}
+
+			if otelkafka.Context(msg) == context.Background() {
+				slog.Error("Message without root span context")
+			}
+			trace.OnPoll(msg, group) // tracing poll
+
+			// process message
+			func() {
+				trace.OnProcess(msg, group) // trace start process message
+				fmt.Printf("Message on topic %s: key = %s, value = %s, offset = %d\n",
+					*msg.TopicPartition.Topic,
+					string(msg.Key),
+					string(msg.Value),
+					msg.TopicPartition.Offset)
+				_, err2 := consumer.CommitMessage(msg)
+				if err2 != nil {
+					slog.Error("Failed to commit message: ", slog.String("error", err2.Error()))
+				}
+				trace.OnCommit(msg, group) // trace commit message
+			}()
+
 		}
 	}
 
