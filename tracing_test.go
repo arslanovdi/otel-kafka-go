@@ -1,8 +1,15 @@
-package otel_kafka_go
+package otelkafkago
 
 import (
 	"bytes"
 	"context"
+	"io"
+	"log/slog"
+	"os"
+	"strings"
+	"testing"
+	"time"
+
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 	"github.com/stretchr/testify/assert"
 	"go.opentelemetry.io/otel"
@@ -12,12 +19,6 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/semconv/v1.27.0"
 	"go.opentelemetry.io/otel/trace"
-	"io"
-	"log/slog"
-	"os"
-	"strings"
-	"testing"
-	"time"
 )
 
 var tracer = otel.GetTracerProvider().Tracer(
@@ -30,12 +31,10 @@ var buf bytes.Buffer // буфер для вывода трэйсинга
 var duration = 1 * time.Second // время ожидания отправки сообщения в буфер провайдером OpenTelemetry
 
 func TestMain(m *testing.M) {
-
 	exporter, err := stdouttrace.New(
 		stdouttrace.WithPrettyPrint(),
-		stdouttrace.WithWriter(&buf), //os.Stdout), //
+		stdouttrace.WithWriter(&buf), // os.Stdout), //
 	)
-
 	if err != nil {
 		os.Exit(1)
 	}
@@ -181,7 +180,6 @@ func Test_otelProvider_OnCommit(t *testing.T) {
 				assert.NotEqual(t, spanId, string(h.Value)) // spanid должен быть новым
 			}
 		}
-
 	})
 
 	t.Run("OnCommit without span", func(t *testing.T) {
@@ -292,7 +290,6 @@ func Test_otelProvider_OnPoll(t *testing.T) {
 		}
 		assert.Equal(t, 2, foundrootid) // должно быть 2 вхождения rootid в tracing
 		assert.Equal(t, 1, foundspanid) // должно быть 1 вхождение spanid в tracing, т.к. OnPoll формирует новый span
-
 	})
 
 	t.Run("OnPoll without span", func(t *testing.T) {
@@ -399,7 +396,6 @@ func Test_otelProvider_OnProcess(t *testing.T) {
 				assert.NotEqual(t, spanId, string(h.Value)) // spanid должен быть новым
 			}
 		}
-
 	})
 
 	t.Run("OnPoll without span", func(t *testing.T) {
@@ -451,7 +447,6 @@ func Test_otelProvider_OnProcess(t *testing.T) {
 		assert.True(t, traceid) // после выполнения OnProcess в msg.Headers должен быть root traceid
 		assert.True(t, spanid)  // после выполнения OnProcess в msg.Headers должен быть spanid
 	})
-
 }
 
 func Test_otelProvider_OnSend(t *testing.T) {
@@ -530,9 +525,7 @@ func Test_otelProvider_OnSend(t *testing.T) {
 				assert.NotEqual(t, spanId, string(h.Value)) // spanid должен быть новым
 			}
 		}
-
 	})
-
 }
 
 func Test_setSpanAttributes(t *testing.T) {
@@ -555,7 +548,7 @@ func Test_setSpanAttributes(t *testing.T) {
 		traceid2 := ""
 		spanid2 := ""
 		for _, h := range msg.Headers {
-			switch string(h.Key) {
+			switch h.Key {
 			case TraceHeaderName:
 				traceid2 = string(h.Value)
 			case SpanHeaderName:
@@ -567,6 +560,5 @@ func Test_setSpanAttributes(t *testing.T) {
 		assert.Equal(t, traceId, traceid2)
 		assert.Equal(t, spanId, spanid2)
 		assert.Equal(t, sampled, span.SpanContext().IsSampled())
-
 	})
 }

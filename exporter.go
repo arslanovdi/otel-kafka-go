@@ -1,8 +1,9 @@
-package otel_kafka_go
+package otelkafkago
 
 import (
 	"context"
 	"errors"
+
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/propagation"
@@ -18,12 +19,11 @@ type Tracer struct {
 }
 
 // NewProvider инициализация grpc экспортера и глобального провайдера OpenTelemetry трассировки
-func NewProvider(ctx context.Context, servicename string, ednpoint string) (*Tracer, error) {
-
+func NewProvider(ctx context.Context, servicename, ednpoint string) (*Tracer, error) {
 	exporter, err := otlptracegrpc.New( // grpc экспортер
 		ctx,
 		otlptracegrpc.WithInsecure(),
-		otlptracegrpc.WithEndpoint(ednpoint),
+		otlptracegrpc.WithEndpoint(ednpoint), // jaeger IP:port for example
 	)
 	if err != nil {
 		return nil, err
@@ -39,8 +39,6 @@ func NewProvider(ctx context.Context, servicename string, ednpoint string) (*Tra
 		sdktrace.WithBatcher(exporter),
 		sdktrace.WithSampler(
 			sdktrace.AlwaysSample(),
-			//sdktrace.ParentBased(sdktrace.TraceIDRatioBased(0.2)), // 20% сэмплируем
-			//sdktrace.NeverSample(),
 		),
 	)
 
@@ -56,7 +54,6 @@ func NewProvider(ctx context.Context, servicename string, ednpoint string) (*Tra
 
 // Shutdown shuts down the trace exporter and trace provider.
 func (t *Tracer) Shutdown(ctx context.Context) error {
-
 	// Shutdown the trace provider.
 	err := t.provider.Shutdown(ctx)
 
